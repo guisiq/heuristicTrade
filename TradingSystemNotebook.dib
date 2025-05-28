@@ -1,0 +1,588 @@
+#!meta
+
+description: A .NET Interactive Notebook demonstrating a placeholder Genetic Programming workflow for stock trading strategies using C#.
+
+kernelspec:
+  name: .net-csharp
+  display_name: .NET (C#)
+
+#!markdown
+
+# Genetic Programming for Stock Trading Strategies in C#
+
+This notebook demonstrates the structure and placeholder workflow of a Genetic Programming (GP) system designed to evolve stock trading strategies. It will attempt to load live financial data for demonstration, but includes a fallback to sample data if live fetching is unsuccessful. Due to limitations in the current environment (e.g., inability to add specific NuGet packages like HeuristicLab), the actual GP algorithm execution is simulated. However, all C# classes for data handling, simulation, and the GP problem/runner structure are defined and used to show the conceptual flow.
+
+---
+
+#!csharp
+
+// Core Class Definitions (Part 1 - Data Structures & Basic Strategy)
+// These are foundational classes from the GeneticTradingSystem project.
+
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq; // Added for Take() and Select() in later cells
+using System.Net.Http; // Added for HttpClient
+using System.Threading.Tasks; // Added for Task
+
+/// <summary>
+/// Represents a single Open, High, Low, Close (OHLC) data point for a financial instrument.
+/// </summary>
+public class OHLCDataPoint
+{
+    public DateTime Date { get; set; }
+    public double Open { get; set; }
+    public double High { get; set; }
+    public double Low { get; set; }
+    public double Close { get; set; }
+    public double Volume { get; set; }
+
+    public OHLCDataPoint(DateTime date, double open, double high, double low, double close, double volume)
+    {
+        Date = date;
+        Open = open;
+        High = high;
+        Low = low;
+        Close = close;
+        Volume = volume;
+    }
+}
+
+/// <summary>
+/// Defines the possible trading actions.
+/// </summary>
+public enum TradingAction
+{
+    Buy, Sell, Hold
+}
+
+/// <summary>
+/// Provides methods to evaluate the output of a Genetic Programming (GP) trading strategy.
+/// </summary>
+public static class StrategyEvaluator
+{
+    public static TradingAction GetActionFromProgramOutput(double outputValue)
+    {
+        if (outputValue > 0.5) return TradingAction.Buy;
+        if (outputValue < -0.5) return TradingAction.Sell;
+        return TradingAction.Hold;
+    }
+}
+
+/// <summary>
+/// Represents performance metrics of a trading strategy.
+/// </summary>
+public class PortfolioMetrics
+{
+    public double TotalReturn { get; }
+    public double SharpeRatio { get; }
+    public int TotalTrades { get; }
+    public List<double> PortfolioValueOverTime { get; }
+
+    public PortfolioMetrics(double totalReturn, double sharpeRatio, int totalTrades, List<double> portfolioValueOverTime)
+    {
+        TotalReturn = totalReturn;
+        SharpeRatio = sharpeRatio;
+        TotalTrades = totalTrades;
+        PortfolioValueOverTime = portfolioValueOverTime ?? new List<double>();
+    }
+}
+
+Console.WriteLine("Core classes (Part 1: OHLCDataPoint, TradingAction, StrategyEvaluator, PortfolioMetrics) defined.");
+
+#!csharp
+
+// Core Class Definitions (Part 2 - Simulation & Data Service Stub)
+
+/// <summary>
+/// Simulates a trading strategy over historical financial data.
+/// </summary>
+public class TradingSimulator
+{
+    public List<OHLCDataPoint> HistoricalData { get; private set; }
+    public double InitialCapital { get; private set; }
+    public double CommissionPerTrade { get; private set; }
+    public double SlippagePercent { get; private set; }
+
+    public TradingSimulator(List<OHLCDataPoint> historicalData, double initialCapital, double commissionPerTrade = 0, double slippagePercent = 0)
+    {
+        if (historicalData == null) throw new ArgumentNullException(nameof(historicalData));
+        if (!historicalData.Any()) throw new ArgumentException("Historical data cannot be empty.", nameof(historicalData));
+        if (initialCapital <= 0) throw new ArgumentException("Initial capital must be positive.", nameof(initialCapital));
+
+        HistoricalData = historicalData;
+        InitialCapital = initialCapital;
+        CommissionPerTrade = commissionPerTrade;
+        SlippagePercent = slippagePercent;
+    }
+
+    public PortfolioMetrics EvaluateStrategy(Func<OHLCDataPoint, List<double>, int, TradingAction> strategyLogic, List<double> allClosePrices)
+    {
+        double currentCapital = InitialCapital;
+        double sharesHeld = 0;
+        var portfolioValueOverTime = new List<double> { InitialCapital };
+        int totalTrades = 0;
+
+        for (int currentIndex = 0; currentIndex < HistoricalData.Count; currentIndex++)
+        {
+            OHLCDataPoint currentBar = HistoricalData[currentIndex];
+            TradingAction action = strategyLogic(currentBar, allClosePrices, currentIndex);
+
+            if (action == TradingAction.Buy && sharesHeld == 0 && currentCapital > 0)
+            {
+                double buyPrice = currentBar.Close * (1 + SlippagePercent);
+                 if ((currentCapital - CommissionPerTrade) <= 0) 
+                 {
+                    portfolioValueOverTime.Add(currentCapital + (sharesHeld * currentBar.Close));
+                    continue;
+                 }
+                double sharesToBuy = (currentCapital - CommissionPerTrade) / buyPrice;
+                if (sharesToBuy <= 0)
+                {
+                    portfolioValueOverTime.Add(currentCapital + (sharesHeld * currentBar.Close));
+                    continue;
+                }
+                sharesHeld = sharesToBuy;
+                currentCapital -= (sharesToBuy * buyPrice) + CommissionPerTrade;
+                totalTrades++;
+            }
+            else if (action == TradingAction.Sell && sharesHeld > 0)
+            {
+                double sellPrice = currentBar.Close * (1 - SlippagePercent);
+                currentCapital += (sharesHeld * sellPrice) - CommissionPerTrade;
+                sharesHeld = 0;
+                totalTrades++;
+            }
+            double currentPortfolioValue = currentCapital + (sharesHeld * currentBar.Close);
+            portfolioValueOverTime.Add(currentPortfolioValue);
+        }
+
+        double finalPortfolioValue = portfolioValueOverTime.LastOrDefault();
+        if (!portfolioValueOverTime.Any()) finalPortfolioValue = InitialCapital;
+        
+        double totalReturn = (InitialCapital == 0) ? 0 : (finalPortfolioValue / InitialCapital) - 1;
+        double sharpeRatio = 0;
+
+        if (portfolioValueOverTime.Count >= 2)
+        {
+            var dailyReturns = new List<double>();
+            for (int i = 1; i < portfolioValueOverTime.Count; i++)
+            {
+                if (portfolioValueOverTime[i-1] == 0) dailyReturns.Add(0);
+                else dailyReturns.Add((portfolioValueOverTime[i] / portfolioValueOverTime[i-1]) - 1);
+            }
+            if (dailyReturns.Any())
+            {
+                double averageDailyReturn = dailyReturns.Average();
+                double stdDevDailyReturn = CalculateStandardDeviation(dailyReturns);
+                sharpeRatio = (stdDevDailyReturn == 0) ? 0 : (averageDailyReturn / stdDevDailyReturn) * Math.Sqrt(252);
+            }
+        }
+        return new PortfolioMetrics(totalReturn, sharpeRatio, totalTrades, portfolioValueOverTime);
+    }
+
+    private static double CalculateStandardDeviation(List<double> values)
+    {
+        if (values == null || values.Count < 2) return 0;
+        double mean = values.Average();
+        double sumOfSquares = values.Sum(val => (val - mean) * (val - mean));
+        return Math.Sqrt(sumOfSquares / (values.Count - 1));
+    }
+}
+
+// NotebookDataHelper is kept for parsing sample data if live fetch fails.
+public static class NotebookDataHelper {
+    public static List<OHLCDataPoint> LoadDataFromCsvString(string csvString) {
+        var data = new List<OHLCDataPoint>();
+        var lines = csvString.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+        bool headerSkipped = false;
+        foreach (var line in lines) {
+            if (!headerSkipped) { headerSkipped = true; continue; }
+            var parts = line.Split(',');
+            if (parts.Length == 6) { // Sample data has 6 columns
+                try {
+                    data.Add(new OHLCDataPoint(
+                        DateTime.Parse(parts[0].Trim(), System.Globalization.CultureInfo.InvariantCulture),
+                        double.Parse(parts[1].Trim(), System.Globalization.CultureInfo.InvariantCulture),
+                        double.Parse(parts[2].Trim(), System.Globalization.CultureInfo.InvariantCulture),
+                        double.Parse(parts[3].Trim(), System.Globalization.CultureInfo.InvariantCulture),
+                        double.Parse(parts[4].Trim(), System.Globalization.CultureInfo.InvariantCulture),
+                        double.Parse(parts[5].Trim(), System.Globalization.CultureInfo.InvariantCulture)
+                    ));
+                } catch (Exception ex) {
+                    Console.WriteLine($"Skipping sample data line due to parsing error: {line} - Error: {ex.Message}");
+                }
+            } else {
+                 Console.WriteLine($"Skipping sample data line due to incorrect number of columns: {line}");
+            }
+        }
+        return data;
+    }
+}
+
+Console.WriteLine("Core classes (Part 2: TradingSimulator, NotebookDataHelper) defined.");
+
+#!csharp
+
+// Core Class Definitions (Part 3 - Placeholder GP Infrastructure)
+// FinancialTerminals, FinancialFunctions, TechnicalIndicators would typically be in separate files
+// but their logic is conceptually part of what StockTradingGPProblem would use.
+
+/// <summary>
+/// Placeholder for a Genetic Programming problem definition for stock trading.
+/// </summary>
+public class StockTradingGPProblem
+{
+    public List<OHLCDataPoint> TimeSeriesData { get; private set; }
+    public List<double> ClosePrices { get; private set; }
+    public TradingSimulator Simulator { get; private set; }
+    public int MinimumTreeDepth { get; set; } = 2;
+    public int MaximumTreeDepth { get; set; } = 8;
+
+    public StockTradingGPProblem(List<OHLCDataPoint> timeSeriesData, double initialCapital, double commission, double slippage)
+    {
+        if (timeSeriesData == null) throw new ArgumentNullException(nameof(timeSeriesData));
+        if (!timeSeriesData.Any()) throw new ArgumentException("Time series data cannot be empty.", nameof(timeSeriesData));
+
+        TimeSeriesData = timeSeriesData;
+        ClosePrices = TimeSeriesData.Select(d => d.Close).ToList();
+        Simulator = new TradingSimulator(timeSeriesData, initialCapital, commission, slippage);
+        InitializeGpPrimitives();
+    }
+
+    private void InitializeGpPrimitives()
+    {
+        // In HeuristicLab, this is where actual GP primitives would be defined.
+        // Console.WriteLine("Placeholder: GP Primitives would be initialized here.");
+    }
+
+    public double Evaluate(object individual)
+    {
+        // Placeholder for fitness evaluation. In a real scenario, this would execute
+        // the GP individual (tree) and use the Simulator to get metrics.
+        // Returning a default fitness.
+        return 0.0;
+    }
+}
+
+/// <summary>
+/// Placeholder class for configuring and running a Genetic Programming (GP) algorithm.
+/// </summary>
+public class GpAlgorithmRunner
+{
+    public StockTradingGPProblem Problem { get; private set; }
+    public int PopulationSize { get; set; } = 100;
+    public int NumberOfGenerations { get; set; } = 50;
+    public double CrossoverRate { get; set; } = 0.8;
+    public double MutationRate { get; set; } = 0.2;
+    public PortfolioMetrics BestSolutionMetrics { get; private set; }
+    // public object BestSolution { get; private set; } // Placeholder for actual GP tree
+
+    public GpAlgorithmRunner(StockTradingGPProblem problem)
+    {
+        Problem = problem ?? throw new ArgumentNullException(nameof(problem));
+        InitializeAlgorithm();
+    }
+
+    private void InitializeAlgorithm()
+    {
+        Console.WriteLine("Placeholder: GP Algorithm Initialized with parameters.");
+        Console.WriteLine($"  Population: {PopulationSize}, Generations: {NumberOfGenerations}, Crossover: {CrossoverRate}, Mutation: {MutationRate}");
+    }
+
+    public void Run()
+    {
+        Console.WriteLine("Placeholder: GP Algorithm Run Started.");
+        for (int i = 0; i < NumberOfGenerations; i++)
+        {
+            if ((i + 1) % (NumberOfGenerations/5 == 0 ? 1 : NumberOfGenerations/5) == 0 || i == NumberOfGenerations -1) // Print progress periodically
+            {
+                Console.WriteLine($"  Placeholder: Generation {i + 1}/{NumberOfGenerations} completed.");
+            }
+        }
+        Console.WriteLine("Placeholder: GP Algorithm Run Finished.");
+
+        // Simulate finding a 'best' solution by evaluating a dummy strategy.
+        // The dummy strategy: Buy if current close > previous close, Sell if current close < previous close, else Hold.
+        // This is just to make the simulation run and produce some metrics.
+        Func<OHLCDataPoint, List<double>, int, TradingAction> dummyStrategyLogic = (currentBar, allCloses, currentIndex) =>
+        {
+            if (currentIndex == 0) return TradingAction.Hold; // Need previous bar
+            double currentClose = currentBar.Close;
+            double previousClose = allCloses[currentIndex - 1];
+
+            if (currentClose > previousClose) return TradingAction.Buy;
+            if (currentClose < previousClose) return TradingAction.Sell;
+            return TradingAction.Hold;
+        };
+        
+        BestSolutionMetrics = Problem.Simulator.EvaluateStrategy(dummyStrategyLogic, Problem.ClosePrices);
+        // BestSolution = "PlaceholderTree: Buy if Close > PrevClose, Sell if Close < PrevClose";
+        Console.WriteLine("Placeholder: Best solution 'found' by evaluating a dummy strategy and metrics calculated.");
+    }
+
+    public string GetBestSolutionDetails()
+    {
+        if (BestSolutionMetrics == null) return "No solution found or algorithm not run.";
+        string treeString = "N/A (Placeholder: Actual HeuristicLab tree structure not available; using a dummy strategy for metrics)";
+        return $"Best Strategy (Placeholder):\nTree: {treeString}\n" +
+               $"Total Return: {BestSolutionMetrics.TotalReturn:P2}\n" +
+               $"Sharpe Ratio: {BestSolutionMetrics.SharpeRatio:F2}\n" +
+               $"Total Trades: {BestSolutionMetrics.TotalTrades}";
+    }
+}
+Console.WriteLine("Core classes (Part 3: StockTradingGPProblem, GpAlgorithmRunner) defined.");
+
+#!markdown
+
+## Data Preparation
+
+The next C# cell is responsible for preparing the financial data for our simulation. It will first attempt to download real historical stock data for a predefined ticker (e.g., "MSFT") from Yahoo Finance for the last six months. 
+
+Fetching live data requires an active internet connection and can sometimes be unreliable due to network issues, changes in the provider's API, or restrictions they might place on automated requests (especially from sandbox environments). 
+
+**Crucially, if the live data download fails for any reason, the notebook is designed to automatically fall back to using a small, local sample dataset.** This ensures that the rest of the notebook, including the Genetic Programming simulation steps, can still run and demonstrate the workflow.
+
+The C# code in the next cell contains the ticker symbol (e.g., "MSFT") and the date range for fetching data. Users can modify these parameters to experiment, but should be aware that live data fetching might not always work as expected in all environments.
+
+---
+
+#!csharp
+
+// Ensure OHLCDataPoint and NotebookDataHelper (for parsing sampleCsvData) are defined in preceding cells.
+// Ensure 'using System.Net.Http;' and 'using System.Threading.Tasks;' are in the first C# cell.
+
+public static async Task<List<OHLCDataPoint>> FetchYahooFinanceDataAsync(string ticker, DateTime startDate, DateTime endDate)
+{
+    string period1 = new DateTimeOffset(startDate.Date).ToUnixTimeSeconds().ToString(); // Use .Date to ensure time part is 00:00:00
+    string period2 = new DateTimeOffset(endDate.Date.AddDays(1).AddSeconds(-1)).ToUnixTimeSeconds().ToString(); // End of day for endDate
+    string yahooUrl = $"https://query1.finance.yahoo.com/v7/finance/download/{ticker}?period1={period1}&period2={period2}&interval=1d&events=history&includeAdjustedClose=true";
+
+    Console.WriteLine($"Attempting to fetch live data from: {yahooUrl}");
+
+    try
+    {
+        using (HttpClient client = new HttpClient())
+        {
+            client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
+            HttpResponseMessage response = await client.GetAsync(yahooUrl);
+            if (response.IsSuccessStatusCode)
+            {
+                string csvData = await response.Content.ReadAsStringAsync();
+                Console.WriteLine("Live data fetched successfully. Parsing...");
+                var lines = csvData.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+                var data = new List<OHLCDataPoint>();
+                bool headerSkipped = false;
+                // Yahoo CSV: Date,Open,High,Low,Close,Adj Close,Volume
+                foreach (var line in lines) {
+                    if (!headerSkipped) { headerSkipped = true; continue; }
+                    var parts = line.Split(',');
+                    if (parts.Length >= 7) { 
+                        try {
+                            if (parts.Any(p => p.Equals("null", StringComparison.OrdinalIgnoreCase))) {
+                                Console.WriteLine($"Skipping line with null values: {line}");
+                                continue;
+                            }
+                            data.Add(new OHLCDataPoint(
+                                DateTime.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture),
+                                double.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
+                                double.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture),
+                                double.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture),
+                                double.Parse(parts[4], System.Globalization.CultureInfo.InvariantCulture), // Close
+                                double.Parse(parts[6], System.Globalization.CultureInfo.InvariantCulture)  // Volume
+                            ));
+                        } catch (Exception ex) {
+                            Console.WriteLine($"Skipping line due to parsing error: {line} - Error: {ex.Message}");
+                        }
+                    }
+                }
+                if (data.Any()) return data;
+                Console.WriteLine("Parsed live data resulted in no entries (e.g. all rows had 'null' or invalid format).");
+                return null;
+            }
+            else
+            {
+                Console.WriteLine($"Failed to fetch live data. Status Code: {response.StatusCode}. Reason: {response.ReasonPhrase}");
+                string errorContent = await response.Content.ReadAsStringAsync();
+                if(!string.IsNullOrWhiteSpace(errorContent)) Console.WriteLine($"Error content: {errorContent.Substring(0, Math.Min(errorContent.Length, 500))}");
+                return null;
+            }
+        }
+    }
+    catch (HttpRequestException ex)
+    {
+        Console.WriteLine($"Network error while fetching live data: {ex.Message}");
+        return null;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"An unexpected error occurred while fetching live data: {ex.Message}");
+        return null;
+    }
+}
+
+List<OHLCDataPoint> historicalData = null;
+string liveDataSourceInfo = "Yahoo Finance (https://query1.finance.yahoo.com)";
+
+// --- Attempt to load live data ---
+string ticker = "MSFT"; // Microsoft as an example
+DateTime endDate = DateTime.Today;
+DateTime startDate = endDate.AddMonths(-6); // Last 6 months
+
+Console.WriteLine($"--- Attempting to load LIVE data for {ticker} from {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd} ---");
+// .NET Interactive Notebooks support top-level await.
+historicalData = await FetchYahooFinanceDataAsync(ticker, startDate, endDate);
+
+// --- Fallback to sample data if live data fails ---
+if (historicalData == null || !historicalData.Any())
+{
+    Console.WriteLine($"\n--- Failed to load live data from {liveDataSourceInfo} or no data returned. ---");
+    Console.WriteLine("--- Falling back to local sample data. ---");
+    string sampleCsvData = @"Date,Open,High,Low,Close,Volume
+2023-01-01,100,102,99,101,1000
+2023-01-02,101,103,100,102,1200
+2023-01-03,102,105,101,104,1500
+2023-01-04,104,106,103,103,1300
+2023-01-05,103,104,102,102,1100
+2023-01-06,102,103,101,102,1050
+2023-01-07,102,104,101,103,1150
+2023-01-08,103,105,102,104,1250";
+    
+    historicalData = NotebookDataHelper.LoadDataFromCsvString(sampleCsvData); // Use the helper for sample data
+    liveDataSourceInfo = "Local Sample Data (Fallback)"; 
+} else {
+     Console.WriteLine($"Successfully loaded {historicalData.Count} data points from {liveDataSourceInfo}.");
+}
+
+Console.WriteLine($"\n--- Data for GP ({liveDataSourceInfo}) ---");
+if (historicalData != null && historicalData.Any())
+{
+    Console.WriteLine($"Loaded {historicalData.Count} data points.");
+    foreach(var point in historicalData.Take(3)) { 
+        Console.WriteLine($"{point.Date:yyyy-MM-dd} O:{point.Open} H:{point.High} L:{point.Low} C:{point.Close} V:{point.Volume}");
+    }
+}
+else
+{
+    Console.WriteLine("No data available for the GP run, even after fallback.");
+}
+
+
+#!markdown
+
+## Genetic Programming Configuration
+
+The data displayed by the C# cell above (either freshly fetched live data or the fallback sample data) will be used for the Genetic Programming simulation configured in the cells below. Please check the output from the data preparation cell to see which data source is currently active.
+
+In the cell below, you can modify parameters for the Genetic Programming simulation, such as initial capital, commission, and GP algorithm settings (population size, number of generations). These are used to configure the `StockTradingGPProblem` and `GpAlgorithmRunner`.
+
+---
+
+#!csharp
+
+double initialCapital = 10000.0;
+double commissionPerTrade = 1.0;    // Example commission
+double slippagePercent = 0.001;   // Example 0.1% slippage
+int populationSize = 50;          // Smaller for quick demo
+int numberOfGenerations = 20;     // Smaller for quick demo
+
+Console.WriteLine("GP Parameters Configured:");
+Console.WriteLine($"  Initial Capital: {initialCapital:C}");
+Console.WriteLine($"  Commission/Trade: {commissionPerTrade:C}");
+Console.WriteLine($"  Slippage: {slippagePercent:P3}");
+Console.WriteLine($"  Population Size: {populationSize}");
+Console.WriteLine($"  Number of Generations: {numberOfGenerations}");
+
+#!markdown
+
+## Run Genetic Programming Simulation
+
+The next cell will instantiate the GP problem and run the placeholder GP algorithm. This will simulate the process of evolving trading strategies.
+
+---
+
+#!csharp
+
+// Ensure historicalData is not null or empty before proceeding
+if (historicalData == null || !historicalData.Any())
+{
+    Console.WriteLine("\nError: No historical data available. Cannot proceed with GP Problem setup and run.");
+    Console.WriteLine("Please check data loading steps or network connectivity if attempting live data fetch.");
+}
+else
+{
+    Console.WriteLine("\nSetting up GP Problem...");
+    var gpProblem = new StockTradingGPProblem(historicalData, initialCapital, commissionPerTrade, slippagePercent);
+    Console.WriteLine("GP Problem created.");
+
+    Console.WriteLine("\nConfiguring and Running GP Algorithm (Placeholder)...");
+    var gpRunner = new GpAlgorithmRunner(gpProblem);
+    gpRunner.PopulationSize = populationSize;
+    gpRunner.NumberOfGenerations = numberOfGenerations;
+    // Other parameters like Crossover/Mutation rates use defaults in GpAlgorithmRunner for this demo
+
+    gpRunner.Run(); // This runs the placeholder logic, including evaluating a dummy strategy.
+    Console.WriteLine("\nGP Algorithm (Placeholder) run complete.");
+
+    Console.WriteLine("\n--- Best Strategy (Placeholder) Details ---");
+    string bestStrategyDetails = gpRunner.GetBestSolutionDetails();
+    Console.WriteLine(bestStrategyDetails);
+
+    if (gpRunner.BestSolutionMetrics != null && gpRunner.BestSolutionMetrics.PortfolioValueOverTime != null)
+    {
+        Console.WriteLine("\n--- Portfolio Value Over Time (Simulation) ---");
+        for(int i = 0; i < gpRunner.BestSolutionMetrics.PortfolioValueOverTime.Count; i++)
+        {
+            string dayLabel = (i == 0) ? "Initial" : $"Bar {i}";
+            Console.WriteLine($"{dayLabel}: {gpRunner.BestSolutionMetrics.PortfolioValueOverTime[i]:C}");
+        }
+    }
+
+    Console.WriteLine("\nTo visualize, you would typically plot the 'Portfolio Value Over Time' list using a charting library.");
+    Console.WriteLine("For example, the data points for the portfolio value are:");
+    if (gpRunner.BestSolutionMetrics != null && gpRunner.BestSolutionMetrics.PortfolioValueOverTime != null) {
+        string portfolioValuesString = string.Join(", ", gpRunner.BestSolutionMetrics.PortfolioValueOverTime.Select(v => v.ToString("F2", CultureInfo.InvariantCulture)));
+        Console.WriteLine(portfolioValuesString);
+    } else {
+        Console.WriteLine("No portfolio metrics available to display for visualization.");
+    }
+}
+
+#!markdown
+
+## Results and Evaluation
+
+The cell below displays the "results" from the placeholder GP simulation. This includes details of the "best strategy" found (which is based on a predefined dummy strategy in this placeholder) and its performance metrics.
+
+---
+
+#!csharp
+
+// This cell's content is now integrated into the cell above ("Run Genetic Programming Simulation")
+// to ensure results are displayed immediately after the run and only if data was available.
+// This cell can be removed or kept as a marker if preferred, but its C# logic is now conditional.
+Console.WriteLine("Results display logic moved to the GP run cell to be conditional on data availability.");
+
+
+#!markdown
+
+## Visualization (C# - Basic Textual/Conceptual)
+
+Direct rich plotting in C# interactive notebooks can be complex without external libraries (e.g., XPlot.Plotly) and appropriate setup. Below is a conceptual example of how one might generate a chart and a simple text-based representation of the portfolio values for visualization.
+
+---
+
+#!csharp
+
+// This cell's content is also now integrated into the cell above ("Run Genetic Programming Simulation")
+// to ensure visualization data is displayed immediately after the run and only if data was available.
+Console.WriteLine("Visualization logic moved to the GP run cell to be conditional on data availability.");
+
+#!markdown
+
+## Conclusion
+
+This notebook has walked through a placeholder implementation of a Genetic Programming system for evolving stock trading strategies in C#. It covered data representation, simulation, GP problem setup, and a simulated GP run. The data loading mechanism attempts to use live financial data to make the demonstration more dynamic, but includes a robust fallback to sample data, ensuring the notebook remains functional even if live data access is problematic. While actual HeuristicLab components were not used, the structure provides a clear path for integrating such a library to perform genuine evolutionary computation. The focus here was on demonstrating the end-to-end conceptual workflow within a C# environment.
+
+---
